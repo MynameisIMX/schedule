@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Планировщик смен</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;background:#f4f6f8}
+*{box-sizing:border-box}body{margin:0;padding:24px}main{max-width:1500px;margin:auto}
+h1{font-size:25px;margin:0 0 6px}.sub{color:#64748b;margin:0 0 20px}
+.toolbar{display:flex;flex-wrap:wrap;gap:9px;margin:16px 0}
+button,.filebtn{border:0;border-radius:9px;padding:10px 14px;font-weight:650;cursor:pointer;background:#1f6feb;color:white}
+button.secondary,.filebtn.secondary{background:#e7edf5;color:#243247}
+button:disabled{opacity:.5;cursor:not-allowed}input,select{font:inherit}
+.panel{background:white;border:1px solid #e2e8f0;border-radius:13px;padding:15px;margin:14px 0;box-shadow:0 2px 8px #0f172a08}
+.controls{display:flex;flex-wrap:wrap;gap:14px;align-items:end}.field{display:flex;flex-direction:column;gap:5px;font-size:13px;color:#475569}
+.field input{padding:8px;border:1px solid #cbd5e1;border-radius:7px;width:100px}
+.note{font-size:13px;color:#64748b;line-height:1.5}
+.tablewrap{overflow:auto;max-height:68vh;border:1px solid #dbe2ea;border-radius:10px;background:#fff}
+table{border-collapse:separate;border-spacing:0;white-space:nowrap;font-size:13px;width:max-content;min-width:100%}
+th,td{border-right:1px solid #e5eaf0;border-bottom:1px solid #e5eaf0;text-align:center;padding:0}
+th{position:sticky;top:0;background:#eef3f8;z-index:3;height:38px}
+th:first-child,td:first-child{position:sticky;left:0;z-index:2;background:#f8fafc}
+th:nth-child(2),td:nth-child(2){position:sticky;left:44px;z-index:2;background:#f8fafc}
+th:nth-child(3),td:nth-child(3){position:sticky;left:190px;z-index:2;background:#f8fafc}
+th:first-child{z-index:5}th:nth-child(2),th:nth-child(3){z-index:5}
+td input{width:58px;border:0;background:transparent;text-align:center;padding:9px 2px;font-size:12px}
+td.name input{width:145px;text-align:left;padding-left:8px}td.team input{width:65px}
+td.day input{width:58px}
+td.day.work12{background:#dbeafe}td.day.work4{background:#fef3c7}td.day.work8{background:#dcfce7}
+td.day.leave{background:#fee2e2;color:#991b1b}td.day.trip{background:#f3e8ff;color:#6b21a8}
+td.day.invalid{outline:2px solid #dc2626;outline-offset:-2px}
+tfoot td{position:sticky;bottom:0;background:#edf2f7;font-weight:700;padding:8px}
+th.total{min-width:72px;background:#e2e8f0}
+td.total{font-weight:700;padding:0 10px;background:#f1f5f9}
+td.total.over{background:#fee2e2;color:#991b1b}
+.status{padding:10px 12px;border-radius:9px;margin-top:12px;font-size:13px;white-space:pre-wrap}
+.status.ok{background:#dcfce7;color:#166534}.status.warn{background:#fff7ed;color:#9a3412}.status.err{background:#fee2e2;color:#991b1b}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:#475569}.dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px}
+.small{font-size:12px;color:#64748b}
+</style>
+</head>
+<body><main>
+<h1>Планировщик рабочих смен</h1>
+<p class="sub">Цикл 12 → 4 → 8 часов · после цикла 1–3 дня отдыха · ежедневно ровно 48 часов · не более лимита часов в месяц на сотрудника, нагрузка выравнивается; в одной бригаде допустимы разные смены (12, 4 и 8 часов)</p>
+<div class="toolbar">
+<label class="filebtn secondary">Импорт Excel<input id="file" type="file" accept=".xlsx,.xls" hidden></label>
+<button id="solve">Распределить график</button>
+<button id="export" class="secondary">Экспорт в Excel</button>
+<button id="add" class="secondary">Добавить сотрудника</button>
+<button id="clear" class="secondary">Очистить только автоматически назначенные часы</button>
+</div>
+<section class="panel controls">
+<label class="field">Месяц<input id="month" type="number" min="1" max="12" value="1"></label>
+<label class="field">Год<input id="year" type="number" min="2000" max="2100" value="2026"></label>
+<label class="field">Макс. часов в месяц<input id="maxHours" type="number" min="24" max="744" step="4" value="144"></label>
+<label class="field">Лимит поиска (тыс. состояний)<input id="attempts" type="number" min="20" max="5000" step="20" value="700"></label>
+<div class="note">Числа 12/4/8 и отметки «отпуск» / «командировка» считаются фиксированными. Для одного ID бригады в день разрешены разные длительности смен: например, один сотрудник на 12 ч и один на 4 ч. Но нельзя назначить двум сотрудникам одной бригады одинаковую длительность: максимум одна смена на 12 ч, одна на 4 ч и одна на 8 ч. Пустые ячейки алгоритм может заполнить. Ручные изменения после расчёта тоже становятся фиксированными при следующем запуске.</div>
+</section>
+<section class="panel">
+<div class="legend">
+<span><i class="dot" style="background:#dbeafe"></i>12 часов</span>
+<span><i class="dot" style="background:#fef3c7"></i>4 часа</span>
+<span><i class="dot" style="background:#dcfce7"></i>8 часов</span>
+<span><i class="dot" style="background:#fee2e2"></i>Отпуск</span>
+<span><i class="dot" style="background:#f3e8ff"></i>Командировка</span>
+</div>
+<p class="small">В ячейке можно указать 12, 4, 8, «отпуск», «командировка» или оставить её пустой. Дни определяются по числу столбцов.</p>
+<div class="tablewrap"><table id="grid"></table></div>
+<div id="status" class="status warn">Загрузите Excel-файл или отредактируйте пример. Перед расчётом проверьте месяц и год.</div>
+</section>
+<p class="note"><b>Важно:</b> браузерная версия использует эвристический поиск с многократными попытками. Если подходящее расписание существует, но не найдено за заданное число попыток, увеличьте количество попыток. «Не найдено» не всегда означает математическую невозможность. Для расчёта на границе месяцев нужны данные о цикле сотрудников за предыдущие дни — их следует внести в начало таблицы как начальные значения.</p>
+</main>
+<script>
+const initial = [
+// [№, Фамилия, ID бригады] — дни не заполнены, таблица стартует чистой
+[2,"Сотрудник 1",1],
+[1,"Сотрудник 2",1],
+[3,"Сотрудник 3",24],
+[4,"Сотрудник 4",24],
+[5,"Сотрудник 5",24],
+[6,"Сотрудник 6",2],
+[7,"Сотрудник 7",2],
+[8,"Сотрудник 8",10],
+[10,"Сотрудник 9",10],
+[12,"Сотрудник 10",10],
+[9,"Сотрудник 11",10],
+["","Сотрудник 12",10]
+];
+let staff=initial.map(r=>({num:r[0],name:r[1],team:String(r[2]??""),days:Array.from({length:31},(_,i)=>r[i+3]??"")}));
+let days=31, locked=new Set(), autoSet=new Set();
+const $=id=>document.getElementById(id);
+function norm(v){return String(v??"").trim().toLowerCase()}
+function kind(v){let s=norm(v);if(!s)return "";if(["отпуск","о","vacation"].includes(s))return "leave";if(["командировка","к","trip"].includes(s))return "trip";let n=Number(s);return [12,4,8].includes(n)?String(n):"invalid"}
+function render(){
+ days=Number($("month").value)>0?new Date(Number($("year").value),Number($("month").value),0).getDate():31;
+ staff.forEach(x=>{while(x.days.length<days)x.days.push("");x.days=x.days.slice(0,days)});
+ let h='<thead><tr><th style="min-width:44px">№</th><th style="min-width:146px">Фамилия</th><th style="min-width:66px">ID</th>';
+ for(let d=1;d<=days;d++)h+=`<th style="min-width:58px">${d}</th>`;
+ h+='<th class="total">Итого</th></tr></thead><tbody>';
+ const cap=capHours();
+ staff.forEach((s,i)=>{h+=`<tr><td>${i+1}</td><td class="name"><input data-i="${i}" data-k="name" value="${esc(s.name)}"></td><td class="team"><input data-i="${i}" data-k="team" value="${esc(s.team)}"></td>`;
+ s.days.forEach((v,d)=>{let k=kind(v),cl=k==="12"?"work12":k==="4"?"work4":k==="8"?"work8":k==="leave"?"leave":k==="trip"?"trip":k==="invalid"?"invalid":"";h+=`<td class="day ${cl}"><input data-i="${i}" data-d="${d}" value="${esc(v)}" title="День ${d+1}: 12, 4, 8, отпуск или командировка"></td>`});
+ const tot=rowTotal(s);h+=`<td class="total${tot>cap?" over":""}" title="${tot>cap?"Превышен лимит "+cap+" ч":"Часов за месяц"}">${tot}</td></tr>`});
+ h+='</tbody><tfoot><tr><td colspan="3">Всего часов</td>';
+ for(let d=0;d<days;d++){let sum=staff.reduce((a,s)=>a+(Number(s.days[d])||0),0);h+=`<td>${sum||"—"}</td>`}
+ h+=`<td>${staff.reduce((a,s)=>a+rowTotal(s),0)}</td></tr></tfoot>`;
+ $("grid").innerHTML=h;
+ $("grid").querySelectorAll("input").forEach(inp=>inp.addEventListener("change",()=>{let i=+inp.dataset.i;if(inp.dataset.k)staff[i][inp.dataset.k]=inp.value;else{let d=+inp.dataset.d;staff[i].days[d]=inp.value;locked.add(i+":"+d);autoSet.delete(i+":"+d)}render()}));
+}
+function capHours(){const v=Number($("maxHours").value);return v>0?v:144}
+function rowTotal(s){return s.days.reduce((a,v)=>a+(["12","4","8"].includes(kind(v))?Number(norm(v)):0),0)}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function setStatus(msg,type="warn"){$("status").className="status "+type;$("status").textContent=msg}
+function validateFixed(){
+ let errors=[];
+ staff.forEach((s,i)=>s.days.forEach((v,d)=>{if(v!==""&&kind(v)==="invalid")errors.push(`${s.name}, день ${d+1}: неизвестное значение «${v}»`)}));
+ const groups={};staff.forEach(s=>(groups[s.team]??=[]).push(s));
+ Object.entries(groups).forEach(([team,arr])=>{if(team&&arr.length>1){for(let d=0;d<days;d++){let away=arr.filter(s=>["leave","trip"].includes(kind(s.days[d])));if(away.length>1)errors.push(`Бригада ${team}: более одного сотрудника одновременно отсутствует ${d+1}-го числа`);}}});
+ return errors;
+}
+// States: -3..-1 = remaining rest days; 0 = may start a 12h cycle; 1 = must work 4h; 2 = must work 8h.
+// Balancing: each day the search prefers employees with the fewest hours so far, and rest length after
+// a cycle depends on whether the employee is ahead of or behind the average pace. Several randomized
+// runs are made and the most even schedule is kept. Nobody may exceed the monthly hour limit.
+function solve(){
+ const errors=validateFixed();
+ if(errors.length){setStatus("Исправьте исходные данные:\n"+errors.join("\n"),"err");return}
+ const n=staff.length, maxNodes=Math.max(20000,Math.min(3000000,(+$("attempts").value||700)*1000));
+ const cap=capHours();
+ // Cells filled by the previous automatic run are recalculated; everything else is fixed.
+ const fixed=staff.map((s,i)=>s.days.map((v,d)=>autoSet.has(i+":"+d)||norm(v)===""?null:kind(v)));
+ const teams=staff.map(s=>String(s.team).trim());
+ const isWork=v=>v==="12"||v==="4"||v==="8";
+ // reserve[i][d] = fixed hours of employee i on days d..end (they will be worked anyway).
+ const reserve=fixed.map(r=>{const a=Array(days+1).fill(0);for(let d=days-1;d>=0;d--)a[d]=a[d+1]+(isWork(r[d])?Number(r[d]):0);return a});
+ const sourceConflicts=[];
+ for(let d=0;d<days;d++){
+   let fixedHours=0, seenTeamHours=new Map();
+   for(let i=0;i<n;i++) if(isWork(fixed[i][d])){
+     fixedHours+=Number(fixed[i][d]);
+     const key=teams[i]+"|"+fixed[i][d];
+     if(seenTeamHours.has(key))sourceConflicts.push(`День ${d+1}: у бригады ID ${teams[i]} уже есть две одинаковые смены по ${fixed[i][d]} ч (${staff[seenTeamHours.get(key)].name} и ${staff[i].name}).`);
+     else seenTeamHours.set(key,i);
+   }
+   if(fixedHours>48)sourceConflicts.push(`День ${d+1}: в исходных ячейках уже ${fixedHours} часов, это больше нормы 48.`);
+ }
+ for(let i=0;i<n;i++)if(reserve[i][0]>cap)sourceConflicts.push(`${staff[i].name}: в фиксированных ячейках уже ${reserve[i][0]} ч, это больше лимита ${cap} ч.`);
+ if(sourceConflicts.length){
+   setStatus("В исходных данных есть фиксированные значения, которые противоречат правилам:\n"+sourceConflicts.join("\n")+"\nИсправьте эти ячейки вручную или очистите их, если это не утверждённые смены, затем запустите распределение снова.","err");
+   return;
+ }
+ if(cap*n<48*days){
+   setStatus(`Нужно ${48*days} ч за месяц, а при лимите ${cap} ч ${n} сотрудников могут отработать максимум ${cap*n} ч. Увеличьте лимит или добавьте сотрудников.`,"err");
+   return;
+ }
+ // At the first day, 4h/8h can continue a cycle started in the previous month.
+ const initial=Array(n).fill(0);
+ for(let i=0;i<n;i++){
+   if(fixed[i][0]==="4")initial[i]=1;
+   else if(fixed[i][0]==="8")initial[i]=2;
+ }
+ const pace=48/n; // average hours per employee per day
+ // Hours needed if employee i starts a cycle on `day`, including fixed hours later in the month.
+ function startNeed(i,day,h){
+   return h+12+(day+1<days?4:0)+(day+2<days?8:0)+reserve[i][Math.min(days,day+3)];
+ }
+
+ function runOnce(budget){
+   let nodes=0, memo=new Set(), solution=null, timedOut=false;
+   function dfs(day,states,hours,rows){
+     if(day===days){solution=rows;return true}
+     if(++nodes>budget){timedOut=true;return false}
+     const key=day+"|"+states.join(",")+"|"+hours.join(",");
+     if(memo.has(key))return false;
+     const forced=[], optional=[];
+     let forcedHours=0, usedTeamHours=new Set();
+     for(let i=0;i<n;i++){
+       const f=fixed[i][day],st=states[i];
+       if(st<0){
+         if(f!==null&&f!=="leave"&&f!=="trip"){memo.add(key);return false}
+         continue;
+       }
+       if(f==="leave"||f==="trip"){
+         if(st===1||st===2){memo.add(key);return false}
+         continue;
+       }
+       if(st===1||st===2){
+         const h=st===1?4:8;
+         if(f!==null&&f!==String(h)){memo.add(key);return false}
+         forced.push(i);forcedHours+=h;
+       }else if(f==="12"){
+         if(startNeed(i,day,hours[i])>cap){memo.add(key);return false}
+         forced.push(i);forcedHours+=12;
+       }else if(f===null){
+         // Only employees who stay within the monthly limit may start a new cycle.
+         // On the 1st day an empty cell may also continue a cycle from the previous month (4 or 8 h).
+         const opts=[];
+         if(startNeed(i,day,hours[i])<=cap)opts.push(12);
+         if(day===0){
+           if(hours[i]+4+(days>1?8:0)+reserve[i][Math.min(days,2)]<=cap&&(days<2||fixed[i][1]===null||fixed[i][1]==="8"))opts.push(4);
+           if(hours[i]+8+reserve[i][Math.min(days,1)]<=cap&&(days<2||!isWork(fixed[i][1])))opts.push(8);
+         }
+         if(opts.length)optional.push({i,opts});
+       }else{
+         memo.add(key);return false; // 4/8 cannot begin a new cycle
+       }
+     }
+     if(forcedHours>48){memo.add(key);return false}
+     for(const i of forced){
+       const h=states[i]===1?4:states[i]===2?8:12;
+       const teamHour=teams[i]+"|"+h;
+       if(usedTeamHours.has(teamHour)){memo.add(key);return false}
+       usedTeamHours.add(teamHour);
+     }
+     const choices=[];
+     function choose(pos,chosen,h,teamSet){
+       if(h===48){choices.push(chosen.slice());return}
+       if(h>48||pos>=optional.length)return;
+       if(h+12*(optional.length-pos)<48)return;
+       const {i,opts}=optional[pos];
+       choose(pos+1,chosen,h,teamSet);
+       for(const oh of opts){
+         const teamHour=teams[i]+"|"+oh;
+         if(teamSet.has(teamHour))continue;
+         teamSet.add(teamHour);chosen.push([i,oh]);
+         choose(pos+1,chosen,h+oh,teamSet);
+         chosen.pop();teamSet.delete(teamHour);
+       }
+     }
+     choose(0,[],forcedHours,new Set(usedTeamHours));
+     // Prefer employees with the fewest projected hours; small jitter varies the runs.
+     const proj=i=>hours[i]+reserve[i][day];
+     const scored=choices.map(c=>({c,s:c.reduce((a,[i,h])=>a+proj(i)*h/12,0)+Math.random()*14}));
+     scored.sort((a,b)=>a.s-b.s);
+     for(const {c:extra} of scored){
+       // employee -> shift length today (forced ones follow their cycle state)
+       const selected=new Map(forced.map(i=>[i,states[i]===1?4:states[i]===2?8:12]));
+       extra.forEach(([i,h])=>selected.set(i,h));
+       const base=states.slice(), nh=hours.slice(), row=Array(n).fill("");
+       const phase2=[];
+       for(let i=0;i<n;i++){
+         if(base[i]<0){base[i]++;continue}
+         if(selected.has(i)){
+           const h=selected.get(i);
+           row[i]=String(h);nh[i]+=h;
+           if(h===12)base[i]=1;
+           else if(h===4)base[i]=2;
+           else phase2.push(i);
+         }
+       }
+       // After the 8h day: 1–3 rest days. Ahead of average pace → longer rest first.
+       function branchRest(k,nextStates){
+         if(k===phase2.length)return dfs(day+1,nextStates,nh,rows.concat([row]));
+         const i=phase2[k];
+         let opts=nh[i]>pace*(day+1)?[-3,-2,-1]:[-1,-2,-3];
+         if(Math.random()<0.15)opts=[-2,...opts.filter(x=>x!==-2)];
+         for(const r of opts){
+           const ns=nextStates.slice();ns[i]=r;
+           if(branchRest(k+1,ns))return true;
+           if(timedOut)return false;
+         }
+         return false;
+       }
+       if(branchRest(0,base))return true;
+       if(timedOut)return false;
+     }
+     memo.add(key);return false;
+   }
+   dfs(0,initial,Array(n).fill(0),[]);
+   return {solution,nodes,timedOut};
+ }
+
+ const totalsOf=sol=>staff.map((s,i)=>{let t=0;for(let d=0;d<days;d++){const v=fixed[i][d]!==null?fixed[i][d]:sol[d][i];if(isWork(v))t+=Number(v)}return t});
+ const scoreOf=t=>{const m=t.reduce((a,b)=>a+b,0)/t.length;return Math.max(...t)*1000+t.reduce((a,b)=>a+(b-m)**2,0)};
+ let best=null,bestTotals=null,bestScore=Infinity,used=0,runs=0,firstNodes=0,failed=false,timedOut=false;
+ const MAX_RUNS=15;
+ while(runs<MAX_RUNS&&used<maxNodes){
+   // The first run may use the whole budget; extra runs only refine an existing schedule.
+   const budget=runs===0?maxNodes:Math.min(maxNodes-used,Math.max(30000,firstNodes*3));
+   const r=runOnce(budget);runs++;used+=r.nodes;
+   if(runs===1)firstNodes=r.nodes;
+   if(!r.solution){if(runs===1){failed=true;timedOut=r.timedOut}break}
+   const t=totalsOf(r.solution),sc=scoreOf(t);
+   if(sc<bestScore){best=r.solution;bestTotals=t;bestScore=sc}
+   if(Math.max(...t)-Math.min(...t)<=12)break;
+ }
+ if(best){
+   staff.forEach((s,i)=>{for(let d=0;d<days;d++){
+     if(fixed[i][d]!==null)continue;
+     const k=i+":"+d,v=best[d][i]||"";
+     s.days[d]=v;
+     if(v)autoSet.add(k);else autoSet.delete(k);
+   }});
+   render();
+   const t=bestTotals,avg=t.reduce((a,b)=>a+b,0)/n;
+   const minI=t.indexOf(Math.min(...t)),maxI=t.indexOf(Math.max(...t));
+   setStatus(`График найден (вариантов: ${runs}, проверено ${used.toLocaleString("ru-RU")} состояний).\n`+
+     `Часы за месяц: среднее ${avg.toFixed(1)} ч, минимум ${t[minI]} ч (${staff[minI].name}), максимум ${t[maxI]} ч (${staff[maxI].name}); лимит ${cap} ч не превышен.\n`+
+     `Сумма каждого дня — 48 часов; циклы 12→4→8 и отдых 1–3 дня соблюдены; одинаковые смены в одной бригаде не повторяются. `+
+     `У сотрудников с отпуском или командировкой часов обычно меньше. Повторный запуск пересчитывает только автоматически назначенные ячейки.`,"ok");
+ }else{
+   setStatus((timedOut?`Поиск остановлен после ${used.toLocaleString("ru-RU")} состояний.`:`Допустимый график не найден после проверки ${used.toLocaleString("ru-RU")} состояний.`)+
+   `\nПроверьте фиксированные значения, отметки отсутствия и лимит ${cap} ч. Исходные числовые ячейки считаются обязательными. Если значения 4/8 в первый день относятся к предыдущему месяцу, они трактуются как продолжение цикла.`+
+   (timedOut?"\nПопробуйте увеличить лимит поиска.":""),"err");
+ }
+}
+function importFile(file){
+ const reader=new FileReader();reader.onload=e=>{
+  try{
+   const wb=XLSX.read(e.target.result,{type:"array"}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+   let header=rows.findIndex(r=>String(r[2]).trim().toLowerCase()==="id");
+   if(header<0)throw Error("Не найдена строка заголовков с ID в столбце C.");
+   let hdr=rows[header],dayCols=[];for(let c=3;c<hdr.length;c++){if(Number(hdr[c])>=1&&Number(hdr[c])<=31)dayCols.push(c)}
+   if(!dayCols.length)throw Error("Не найдены столбцы дней месяца начиная с D.");
+   days=dayCols.length;
+   staff=rows.slice(header+1).filter(r=>r[1]&&r[2]!==""&&r[2]!==undefined).map(r=>({num:r[0],name:String(r[1]),team:String(r[2]),days:dayCols.map(c=>r[c]??"")}));
+   if(!staff.length)throw Error("Не найдены сотрудники.");
+   autoSet.clear();locked.clear();
+   $("month").value=days===31?1:days===30?4:days===29?2:2;
+   render();setStatus(`Импортировано ${staff.length} сотрудников и ${days} дней из листа «${wb.SheetNames[0]}».`,"ok");
+  }catch(err){setStatus("Ошибка импорта: "+err.message,"err")}
+ };reader.readAsArrayBuffer(file);
+}
+$("file").addEventListener("change",e=>{if(e.target.files[0])importFile(e.target.files[0])});
+$("solve").onclick=solve;
+$("export").onclick=()=>{
+ const data=[["№","Фамилия","ID",...Array.from({length:days},(_,i)=>i+1),"Итого"]];
+ staff.forEach((s,i)=>data.push([s.num||i+1,s.name,s.team,...s.days,rowTotal(s)]));
+ data.push(["","Всего часов","",...Array.from({length:days},(_,d)=>staff.reduce((a,s)=>a+(Number(s.days[d])||0),0)),staff.reduce((a,s)=>a+rowTotal(s),0)]);
+ const ws=XLSX.utils.aoa_to_sheet(data);ws["!cols"]=[{wch:6},{wch:22},{wch:8},...Array(days).fill({wch:13}),{wch:9}];
+ const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"График");XLSX.writeFile(wb,"grafik_smen.xlsx");
+};
+$("add").onclick=()=>{staff.push({num:staff.length+1,name:"Новый сотрудник",team:"",days:Array(days).fill("")});render()};
+$("clear").onclick=()=>{
+ let cnt=0;
+ autoSet.forEach(k=>{const [i,d]=k.split(":").map(Number);if(staff[i]&&d<staff[i].days.length){staff[i].days[d]="";cnt++}});
+ autoSet.clear();render();
+ setStatus(cnt?`Очищено автоматически назначенных ячеек: ${cnt}. Исходные и вручную введённые значения сохранены.`:"Автоматически назначенных часов нет — нечего очищать.","warn");
+};
+$("month").onchange=render;$("year").onchange=render;$("maxHours").onchange=render;
+render();
+</script>
+</body></html>
